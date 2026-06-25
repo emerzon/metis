@@ -144,7 +144,7 @@ class UsageRuntime:
 
     def build_persisted_payload(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "project_name": Path(self.codebase_path).resolve().name,
             "codebase_path": str(Path(self.codebase_path).resolve()),
             "started_at": self.started_at,

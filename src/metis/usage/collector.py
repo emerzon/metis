@@ -4,27 +4,45 @@ from copy import deepcopy
 from threading import Lock
 from typing import Any
 
+from .details import merge_token_details
+from .details import normalize_token_details
+
 
 def _empty_summary() -> dict[str, Any]:
     return {
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
+        "input_token_details": {},
+        "output_token_details": {},
         "by_model": {},
         "by_operation": {},
     }
+
+
+def _increment_details(target: dict[str, int], details: dict[str, int]) -> None:
+    for key, value in details.items():
+        target[key] = target.get(key, 0) + value
 
 
 def _increment(summary: dict[str, Any], event: dict[str, Any]) -> None:
     input_tokens = int(event.get("input_tokens") or 0)
     output_tokens = int(event.get("output_tokens") or 0)
     total_tokens = int(event.get("total_tokens") or (input_tokens + output_tokens))
+    input_token_details = normalize_token_details(
+        event.get("input_token_details") or {}
+    )
+    output_token_details = normalize_token_details(
+        event.get("output_token_details") or {}
+    )
     model_name = str(event.get("model") or "unknown")
     operation = str(event.get("operation") or "llm")
 
     summary["input_tokens"] += input_tokens
     summary["output_tokens"] += output_tokens
     summary["total_tokens"] += total_tokens
+    _increment_details(summary["input_token_details"], input_token_details)
+    _increment_details(summary["output_token_details"], output_token_details)
 
     model_summary = summary["by_model"].setdefault(
         model_name,
@@ -32,11 +50,15 @@ def _increment(summary: dict[str, Any], event: dict[str, Any]) -> None:
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
+            "input_token_details": {},
+            "output_token_details": {},
         },
     )
     model_summary["input_tokens"] += input_tokens
     model_summary["output_tokens"] += output_tokens
     model_summary["total_tokens"] += total_tokens
+    _increment_details(model_summary["input_token_details"], input_token_details)
+    _increment_details(model_summary["output_token_details"], output_token_details)
 
     operation_summary = summary["by_operation"].setdefault(
         operation,
@@ -44,11 +66,15 @@ def _increment(summary: dict[str, Any], event: dict[str, Any]) -> None:
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
+            "input_token_details": {},
+            "output_token_details": {},
         },
     )
     operation_summary["input_tokens"] += input_tokens
     operation_summary["output_tokens"] += output_tokens
     operation_summary["total_tokens"] += total_tokens
+    _increment_details(operation_summary["input_token_details"], input_token_details)
+    _increment_details(operation_summary["output_token_details"], output_token_details)
 
 
 class UsageCollector:
@@ -71,19 +97,29 @@ class UsageCollector:
         input_tokens: int,
         output_tokens: int,
         total_tokens: int | None = None,
+        input_token_details: dict[str, int] | None = None,
+        output_token_details: dict[str, int] | None = None,
     ) -> None:
+        sanitized_input_tokens = max(0, int(input_tokens or 0))
+        sanitized_output_tokens = max(0, int(output_tokens or 0))
         event = {
             "operation": operation or "llm",
             "model": model or "unknown",
-            "input_tokens": max(0, int(input_tokens or 0)),
-            "output_tokens": max(0, int(output_tokens or 0)),
+            "input_tokens": sanitized_input_tokens,
+            "output_tokens": sanitized_output_tokens,
             "total_tokens": max(
                 0,
                 (
                     int(total_tokens)
                     if total_tokens is not None
-                    else int(input_tokens or 0) + int(output_tokens or 0)
+                    else sanitized_input_tokens + sanitized_output_tokens
                 ),
+            ),
+            "input_token_details": merge_token_details(
+                normalize_token_details(input_token_details or {})
+            ),
+            "output_token_details": merge_token_details(
+                normalize_token_details(output_token_details or {})
             ),
         }
         with self._lock:

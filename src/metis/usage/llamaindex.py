@@ -8,32 +8,53 @@ from llama_index.core.callbacks.schema import CBEventType, EventPayload
 
 from .collector import UsageCollector
 from .context import current_operation, current_scope
+from .details import TokenUsage
+from .details import extract_usage_data
 from metis.utils import count_tokens
 
 
-def _as_int(value: Any) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return parsed if parsed > 0 else 0
-
-
-def _extract_counts(payload: dict[str, Any] | None) -> tuple[int, int, int]:
+def _extract_usage(payload: dict[str, Any] | None) -> TokenUsage:
     if not isinstance(payload, dict):
-        return 0, 0, 0
+        return TokenUsage()
     response = payload.get(EventPayload.RESPONSE) or payload.get(
         EventPayload.COMPLETION
     )
+    return _extract_response_usage(response)
+
+
+def _extract_response_usage(response: Any) -> TokenUsage:
+    candidates: list[Any] = []
     additional_kwargs = getattr(response, "additional_kwargs", None) or {}
-    if not isinstance(additional_kwargs, dict):
-        return 0, 0, 0
-    input_tokens = _as_int(additional_kwargs.get("prompt_tokens"))
-    output_tokens = _as_int(additional_kwargs.get("completion_tokens"))
-    total_tokens = _as_int(additional_kwargs.get("total_tokens"))
-    if total_tokens <= 0:
-        total_tokens = input_tokens + output_tokens
-    return input_tokens, output_tokens, total_tokens
+    if isinstance(additional_kwargs, dict):
+        candidates.append(additional_kwargs.get("usage"))
+        candidates.append(additional_kwargs)
+
+    raw = getattr(response, "raw", None)
+    if isinstance(raw, dict):
+        candidates.append(raw.get("usage"))
+    else:
+        candidates.append(getattr(raw, "usage", None))
+
+    best_counts = TokenUsage()
+    best_details = TokenUsage()
+    for candidate in candidates:
+        usage = extract_usage_data(candidate)
+        if usage.has_counts() and usage.has_details():
+            return usage
+        if usage.has_counts() and not best_counts.has_counts():
+            best_counts = usage
+        if usage.has_details() and not best_details.has_details():
+            best_details = usage
+
+    if best_counts.has_counts():
+        return TokenUsage(
+            input_tokens=best_counts.input_tokens,
+            output_tokens=best_counts.output_tokens,
+            total_tokens=best_counts.total_tokens,
+            input_token_details=best_details.input_token_details,
+            output_token_details=best_details.output_token_details,
+        )
+    return best_details
 
 
 def _extract_model(payload: dict[str, Any] | None) -> str:
@@ -98,16 +119,18 @@ class UsageLlamaIndexHandler(BaseCallbackHandler):
         if not scope_id:
             return
         if event_type == CBEventType.LLM:
-            input_tokens, output_tokens, total_tokens = _extract_counts(payload)
-            if input_tokens <= 0 and output_tokens <= 0 and total_tokens <= 0:
+            usage = _extract_usage(payload)
+            if not usage.has_counts():
                 return
             self._collector.record(
                 scope_id=scope_id,
                 operation=current_operation(),
                 model=_extract_model(payload),
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                input_token_details=usage.input_token_details,
+                output_token_details=usage.output_token_details,
             )
             return
         if event_type != CBEventType.EMBEDDING:
